@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
-import { computeUiLayout } from '../ui/UiLayout';
-import { CharacterListView } from '../ui/CharacterListView';
-import type { CharacterData } from '../models/CharacterData';
+import { computeUiLayout } from '../ui/UiLayout.ts';
+import { CharacterListView } from '../ui/CharacterListView.ts';
+import type { CharacterData } from '../models/CharacterData.ts';
 
 export class UIScene extends Phaser.Scene {
     private characterList!: CharacterListView;
@@ -124,32 +124,6 @@ export class UIScene extends Phaser.Scene {
             )
             .setOrigin(0.5, 0)
             .setDepth(6);
-
-        // World area outline
-        this.add
-            .rectangle(
-                layout.worldArea.x,
-                layout.worldArea.y,
-                layout.worldArea.width,
-                layout.worldArea.height
-            )
-            .setOrigin(0, 0)
-            .setStrokeStyle(1, 0xffffff)
-            .setDepth(4);
-
-        this.add
-            .text(
-                layout.worldArea.x + layout.worldArea.width / 2,
-                layout.worldArea.y + layout.worldArea.height / 2,
-                'World Area',
-                {
-                    fontFamily: 'sans-serif',
-                    fontSize: '16px',
-                    color: '#ffffff',
-                }
-            )
-            .setOrigin(0.5)
-            .setDepth(4);
 
         // Share worldArea with WorldScene
         this.registry.set('worldArea', layout.worldArea);
