@@ -3,6 +3,19 @@ import { TILE_SIZE } from './WorldConfig';
 import type { CharacterData } from '../models/CharacterData';
 import type { TileCoord } from './WorldTypes';
 
+import { createInitialSkills, addSkillXp, SKILL_LABELS } from '../models/Skills';
+import type { SkillKey } from '../models/Skills';
+
+import {
+    createEmptyInventory,
+    addItemToInventory,
+    hasCapacityForItem,
+    ITEM_DEFINITIONS,
+} from '../models/Inventory';
+import type { ItemKey } from '../models/Inventory';
+import type { GameLogMessage } from '../models/GameLog';
+
+
 type Character = {
     data: CharacterData;
     sprite: Phaser.GameObjects.Arc;
@@ -16,18 +29,28 @@ export class CharacterController {
     private activeCharacterId: string | null = null;
     private activeHighlight: Phaser.GameObjects.Arc | null = null;
 
-    private moveSpeed = 120; // pixels/sec
+    private moveSpeed = 120; // base pixels/sec at 1x
+    private speedMultiplier = 1; // 1x, 3x, 5x
 
     private scene: Phaser.Scene;
 
     constructor(scene: Phaser.Scene) {
         this.scene = scene;
+
+        // Listen for global game speed changes
+        this.scene.game.events.on('gameSpeedChanged', this.handleGameSpeedChanged, this);
     }
+
+    private handleGameSpeedChanged(speed: number): void {
+        // We trust the UI to only send 1,3,5
+        this.speedMultiplier = speed;
+    }
+
     createInitialCharacters(): void {
         const centerTileX = 100;
         const centerTileY = 100;
 
-        const baseDefs: Omit<CharacterData, 'id'>[] = [
+        const baseDefs: Omit<CharacterData, 'id' | 'skills' | 'inventory'>[] = [
             { name: 'Ari',  color: 0xffcc00, tileX: centerTileX,     tileY: centerTileY },
             { name: 'Bryn', color: 0x4ade80, tileX: centerTileX - 4, tileY: centerTileY - 2 },
             { name: 'Kato', color: 0x60a5fa, tileX: centerTileX + 5, tileY: centerTileY + 3 },
@@ -41,6 +64,8 @@ export class CharacterController {
                 color: base.color,
                 tileX: base.tileX,
                 tileY: base.tileY,
+                skills: createInitialSkills(),
+                inventory: createEmptyInventory(),
             };
 
             const worldX = data.tileX * TILE_SIZE + TILE_SIZE / 2;
@@ -119,7 +144,10 @@ export class CharacterController {
 
     updateMovement(delta: number): void {
         const dt = delta / 1000;
-        const maxDist = this.moveSpeed * dt;
+
+        // Apply game speed multiplier here
+        const speed = this.moveSpeed * this.speedMultiplier;
+        const maxDist = speed * dt;
 
         for (const char of this.characters) {
             if (char.path.length === 0 || char.pathIndex >= char.path.length) continue;
@@ -164,6 +192,39 @@ export class CharacterController {
             }
         }
     }
+
+    // ───────── Gameplay helpers ─────────
+
+    addItemToActiveCharacter(itemKey: ItemKey, quantity: number): number {
+        const active = this.getActiveCharacter();
+        if (!active) return quantity;
+
+        const leftover = addItemToInventory(active.data.inventory, itemKey, quantity);
+        this.emitCharacterDataChanged(active);
+        return leftover;
+    }
+
+
+    addSkillXpForActiveCharacter(skillKey: SkillKey, amount: number): void {
+        const active = this.getActiveCharacter();
+        if (!active) return;
+
+        addSkillXp(active.data.skills, skillKey, amount);
+        this.emitCharacterDataChanged(active);
+    }
+
+    getCharacterDataAtTile(tileX: number, tileY: number): CharacterData | null {
+        const found = this.characters.find(
+            (c) => c.data.tileX === tileX && c.data.tileY === tileY
+        );
+        return found ? found.data : null;
+    }
+
+    private emitCharacterDataChanged(char: Character): void {
+        this.scene.game.events.emit('characterDataChanged', char.data);
+    }
+
+    // ───────── Internal visuals ─────────
 
     private drawPathForCharacter(char: Character): void {
         if (char.pathGraphics) {
@@ -227,4 +288,72 @@ export class CharacterController {
             this.activeHighlight.setDepth(active.sprite.depth + 0.1);
         }
     }
+
+    private findCharacterById(id: string): Character | null {
+        return this.characters.find((c) => c.data.id === id) ?? null;
+    }
+
+    addItemToCharacter(characterId: string, itemKey: ItemKey, quantity: number): number {
+        const char = this.findCharacterById(characterId);
+        if (!char) return quantity;
+
+        const leftover = addItemToInventory(char.data.inventory, itemKey, quantity);
+        this.emitCharacterDataChanged(char);
+
+        const added = quantity - leftover;
+        if (added > 0) {
+            const def = ITEM_DEFINITIONS[itemKey];
+            const msg: GameLogMessage = {
+                id: Phaser.Utils.String.UUID(),
+                timestamp: Date.now(),
+                kind: 'item',
+                text: `Gained ${added} × ${def.name}.`,
+            };
+            this.scene.game.events.emit('logMessage', msg);
+        }
+
+        return leftover;
+    }
+
+
+    addSkillXpForCharacter(skillKey: SkillKey, characterId: string, amount: number): void {
+        const char = this.findCharacterById(characterId);
+        if (!char) return;
+
+        addSkillXp(char.data.skills, skillKey, amount);
+        this.emitCharacterDataChanged(char);
+
+        const skillName = SKILL_LABELS[skillKey];
+        const msg: GameLogMessage = {
+            id: Phaser.Utils.String.UUID(),
+            timestamp: Date.now(),
+            kind: 'xp',
+            text: `Gained ${amount} ${skillName} XP.`,
+        };
+        this.scene.game.events.emit('logMessage', msg);
+    }
+
+
+    getCharacterWorldPositionById(id: string): Phaser.Math.Vector2 | null {
+        const char = this.findCharacterById(id);
+        if (!char) return null;
+        return new Phaser.Math.Vector2(char.sprite.x, char.sprite.y);
+    }
+
+    getCharacterTileById(id: string): TileCoord | null {
+        const char = this.findCharacterById(id);
+        if (!char) return null;
+        return {
+            x: Math.floor(char.sprite.x / TILE_SIZE),
+            y: Math.floor(char.sprite.y / TILE_SIZE),
+        };
+    }
+
+    canCharacterReceiveItem(characterId: string, itemKey: ItemKey, quantity: number): boolean {
+        const char = this.findCharacterById(characterId);
+        if (!char) return false;
+        return hasCapacityForItem(char.data.inventory, itemKey, quantity);
+    }
+
+
 }
